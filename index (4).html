@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BATTLE TRAINING</title>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+
+<style>
+body{margin:0;font-family:Arial;background:radial-gradient(circle at top,#3a0ca3,#000);color:#fff;text-align:center}
+.container{max-width:1000px;margin:auto;padding:16px}
+h1{color:#00f5ff;text-shadow:0 0 10px #00f5ff}
+.panel{background:rgba(255,255,255,0.05);padding:14px;border-radius:16px;margin-top:12px}
+button{padding:12px 16px;border:none;border-radius:12px;font-weight:bold;cursor:pointer}
+.primary{background:linear-gradient(135deg,#ff00c8,#00f5ff);color:#000}
+.secondary{background:linear-gradient(135deg,#00f5ff,#ffe600);color:#000}
+.ghost{background:rgba(255,255,255,0.1);color:#fff}
+.pill{margin:8px 0;padding:8px;border-radius:12px;background:rgba(255,255,255,0.05)}
+.cards{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:12px}
+.card{background:linear-gradient(135deg,#ff00c8,#3a0ca3);padding:16px;border-radius:16px}
+.ratingRow{display:flex;justify-content:space-between;margin:8px 0}
+canvas{background:rgba(255,255,255,0.05);border-radius:12px;padding:6px}
+</style>
+</head>
+
+<body>
+<div class="container">
+<h1>BATTLE TRAINING</h1>
+
+<div class="panel">
+<div id="loginState">尚未登入</div>
+<button class="primary" id="btnLogin">Google 登入</button>
+<button class="ghost" id="btnLogout">登出</button>
+<div id="gateMsg" style="color:#ff6b6b;margin-top:6px"></div>
+</div>
+
+<div id="appPanel" class="panel" style="display:none">
+<button class="primary" id="btnStart">🚀 抽訓練題目</button>
+<button class="secondary" id="btnConfirm" disabled>✅ 確認紀錄</button>
+
+<div id="shareArea">
+<div class="pill" id="shareTitle"></div>
+<div class="cards" id="cards"></div>
+
+<div class="pill">評分</div>
+<div class="ratingRow">音樂性 <input type="range" min="1" max="5" id="r_music"></div>
+<div class="ratingRow">質地 <input type="range" min="1" max="5" id="r_texture"></div>
+<div class="ratingRow">速度差 <input type="range" min="1" max="5" id="r_speed"></div>
+<div class="ratingRow">保持移動 <input type="range" min="1" max="5" id="r_move"></div>
+<div class="ratingRow">整體 <input type="range" min="1" max="5" id="r_overall"></div>
+</div>
+
+<canvas id="chartLine" height="200"></canvas>
+<canvas id="chartBar" height="200"></canvas>
+</div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import { getFirestore, doc, getDoc, setDoc, collection, addDoc, getDocs, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDqwvRJEEPPvT0-PUY9bTTwbikD9mI21XQ",
+  authDomain: "breaking-814bf.firebaseapp.com",
+  projectId: "breaking-814bf",
+  storageBucket: "breaking-814bf.firebasestorage.app",
+  messagingSenderId: "1061448738181",
+  appId: "1:1061448738181:web:29ce05df24b74bdf15d0ec"
+};
+
+// ===== Firebase Init =====
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// iOS Safari 需要 persistence
+await setPersistence(auth, browserLocalPersistence);
+
+const provider = new GoogleAuthProvider();
+
+// 取得畫面元素
+const loginState = document.getElementById("loginState");
+const roleState = document.getElementById("roleState");
+const gateMsg = document.getElementById("gateMsg");
+const debugMsg = document.getElementById("debugMsg");
+const appPanel = document.getElementById("appPanel");
+const adminPanel = document.getElementById("adminPanel");
+
+const btnLogin = document.getElementById("btnLogin");
+const btnLogout = document.getElementById("btnLogout");
+
+// ===== 登入按鈕 =====
+btnLogin.onclick = async () => {
+  try {
+    // iOS 用 redirect，其它用 popup
+    if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+      await signInWithRedirect(auth, provider);
+    } else {
+      await signInWithPopup(auth, provider);
+    }
+  } catch (e) {
+    debugMsg.textContent = "登入錯誤：" + e.message;
+  }
+};
+
+// ===== 登出按鈕 =====
+btnLogout.onclick = () => signOut(auth);
+
+// ===== 監聽登入狀態（真正關鍵在這）=====
+onAuthStateChanged(auth, async (user) => {
+  if (!user) {
+    loginState.textContent = "尚未登入";
+    roleState.textContent = "";
+    appPanel.style.display = "none";
+    adminPanel.style.display = "none";
+    return;
+  }
+
+  loginState.textContent = "已登入：" + user.email;
+
+  // 🔐 檢查是否在允許名單
+  const allowRef = doc(db, "allowUsers", user.email);
+  const allowSnap = await getDoc(allowRef);
+
+  if (!allowSnap.exists()) {
+    gateMsg.textContent = "你沒有權限使用這個系統";
+    appPanel.style.display = "none";
+    return;
+  }
+
+  gateMsg.textContent = "";
+
+  const role = allowSnap.data().role || "student";
+  roleState.textContent = "角色：" + role;
+
+  // 顯示對應畫面
+  if (role === "coach") {
+    adminPanel.style.display = "block";
+  } else {
+    appPanel.style.display = "block";
+  }
+});
+  }
+  loginState.textContent="已登入："+user.email;
+  const allowRef=doc(db,"allowUsers",user.email);
+  const allowSnap=await getDoc(allowRef);
+  if(!allowSnap.exists()){
+    gateMsg.textContent="你沒有權限";
+    return;
+  }
+  gateMsg.textContent="";
+  appPanel.style.display="block";
+});
+
+const fixed=["Top Rock","Go Down","Footwork","Set"];
+const random=["音樂表現","質地呈現","速度差呈現","保持移動"];
+
+btnStart.onclick=()=>{
+  cardsBox.innerHTML="";
+  shareTitle.textContent="本次訓練題目";
+  for(let i=0;i<4;i++){
+    const div=document.createElement("div");
+    div.className="card";
+    div.innerHTML=`<b>${fixed[i]}</b><br>${random[Math.floor(Math.random()*random.length)]}`;
+    cardsBox.appendChild(div);
+  }
+  btnConfirm.disabled=false;
+};
+
+btnConfirm.onclick=async()=>{
+  const user=auth.currentUser;
+  const data={
+    ts:Date.now(),
+    cards:[...cardsBox.children].map(c=>c.textContent),
+    music:r_music.value,
+    texture:r_texture.value,
+    speed:r_speed.value,
+    move:r_move.value,
+    overall:r_overall.value
+  };
+  await addDoc(collection(db,"records",user.email,"list"),data);
+  alert("已儲存！");
+};
+</script>
+</body>
+</html>
